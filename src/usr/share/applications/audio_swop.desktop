@@ -1,9 +1,9 @@
 [Desktop Entry]
-Version=0.1
+Version=1.0
 Name=Audio Swop
 Comment=Replace audio in video files
-Exec=python3 /usr/share/audio-swop/audio_swop.py
-Icon=/usr/share/pixmaps/icon.png
+Exec=audio_swop
+Icon=audio-swop
 Terminal=false
 Type=Application
 Categories=AudioVideo;Video;

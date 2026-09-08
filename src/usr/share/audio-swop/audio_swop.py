@@ -1,163 +1,223 @@
-import os
+"""Audio Swop desktop interface for Ubuntu and Linux Mint."""
 import sys
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QVBoxLayout, QFileDialog, QMessageBox, QLineEdit
-from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
-from PyQt5.QtGui import QMovie
-from PyQt5.QtGui import QFontDatabase
-from datetime import datetime
+import threading
+from pathlib import Path
 
-class FFMpegThread(QThread):
-    progress = pyqtSignal()
+from PyQt5.QtCore import QThread, Qt, QUrl, QSettings, pyqtSignal
+from PyQt5.QtGui import QDesktopServices, QIcon
+from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLayout,
+                             QHBoxLayout, QFileDialog, QMessageBox, QLineEdit,
+                             QDoubleSpinBox, QComboBox, QCheckBox, QProgressBar,
+                             QGroupBox, QFormLayout)
+from media import export, Cancelled
 
-    def __init__(self, video_other_path, video_with_audio_path, output_directory, audio_shift):
-        super().__init__()
-        self.video_other_path = video_other_path
-        self.video_with_audio_path = video_with_audio_path
-        self.output_directory = output_directory
-        self.audio_shift = audio_shift
+
+class ExportThread(QThread):
+    progress = pyqtSignal(int)
+    result = pyqtSignal(str, str)
+
+    def __init__(self, arguments, parent):
+        super().__init__(parent)
+        self.arguments = arguments
+        self.cancelled = threading.Event()
 
     def run(self):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_video_path = os.path.join(self.output_directory, f"output_video_{timestamp}.mp4")
-        os.system(f"ffmpeg -itsoffset {self.audio_shift} -i '{self.video_other_path}' -i '{self.video_with_audio_path}' -c:v copy -map 0:v:0 -map 1:a:0 -shortest '{output_video_path}'")
-        self.progress.emit()
+        try:
+            output = export(*self.arguments, self.cancelled, self.progress.emit)
+            self.result.emit('success', output)
+        except Cancelled:
+            self.result.emit('cancelled', '')
+        except Exception as error:
+            self.result.emit('error', str(error))
+
 
 class AudioSwopApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.video_with_audio_path = ""
-        self.video_other_path = ""
-        self.output_directory = ""
-        self.audio_shift = "0"
-
-        self.initUI()
-
-    def initUI(self):
-        self.setWindowTitle("Audio Swop")
-        self.setGeometry(100, 100, 500, 460)
-
-        layout = QVBoxLayout()
-
-        self.label_instruction = QLabel("Select the video file with desired audio, the video to replace audio, and the directory to save the output.")
-        self.label_instruction.setWordWrap(True)
-        layout.addWidget(self.label_instruction)
-
-        self.button_video_with_audio = QPushButton("Select Video with Desired Audio ⇢")
-        self.button_video_with_audio.clicked.connect(self.select_video_with_audio)
-        layout.addWidget(self.button_video_with_audio)
-
-        self.label_video_with_audio = QLabel("<span style='color:red;'>*</span> No file selected")
-        layout.addWidget(self.label_video_with_audio)
-
-        self.button_video_other = QPushButton("Select Video to Replace Audio ⇠")
-        self.button_video_other.clicked.connect(self.select_video_other)
-        layout.addWidget(self.button_video_other)
-
-        self.label_video_other = QLabel("<span style='color:red;'>*</span> No file selected")
-        layout.addWidget(self.label_video_other)
-
-        self.button_output_directory = QPushButton("Select Directory to Save Output Video ↓")
-        self.button_output_directory.clicked.connect(self.select_output_directory)
-        layout.addWidget(self.button_output_directory)
-
-        self.label_output_directory = QLabel("<span style='color:red;'>*</span> No directory selected")   
-        layout.addWidget(self.label_output_directory)
-
-        self.label_audio_shift = QLabel("Enter audio shift in seconds (positive for forward, negative for backward):")
-        layout.addWidget(self.label_audio_shift)
-
-        self.input_audio_shift = QLineEdit()
-        self.input_audio_shift.setPlaceholderText("0")
-        layout.addWidget(self.input_audio_shift)
-
-        # Spinner setup
-        self.spinner_label = QLabel(self)
-        spinner_path = os.path.join(os.path.dirname(__file__), 'spinner.gif')
-        self.spinner_movie = QMovie(spinner_path)
-        self.spinner_label.setMovie(self.spinner_movie)
-        self.spinner_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.spinner_label)
-        self.spinner_label.setVisible(False)
-
-        # Replacing label setup
-        self.replacing_label = QLabel("Replacing")
-        self.replacing_label.setAlignment(Qt.AlignCenter)
-        fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        self.replacing_label.setFont(fixed_font)
-        layout.addWidget(self.replacing_label)
-        self.replacing_label.setVisible(False)
-
+        self.worker = None
+        self.output = ''
+        self.pending_result = None
+        self.settings = QSettings('AudioSwop', 'AudioSwop')
+        self.setWindowTitle('Audio Swop')
+        self.setWindowIcon(QIcon.fromTheme('audio-x-generic'))
+        self.resize(680, 560)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        title = QLabel('Audio Swop')
+        font = title.font()
+        font.setPointSize(22)
+        font.setBold(True)
+        title.setFont(font)
+        layout.addWidget(title)
+        subtitle = QLabel('Keep your video. Replace its soundtrack.\nVideo is copied without re-encoding; replacement audio is encoded as AAC.')
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+        self.inputs = QGroupBox('1. Choose your files')
+        form = QFormLayout(self.inputs)
+        form.setSpacing(12)
+        self.video = self.file_row(form, '&Video to keep', 'video')
+        self.audio = self.file_row(form, '&Replacement audio', 'audio')
+        self.folder = self.file_row(form, '&Output folder', 'folder')
+        self.folder.setText(self.settings.value('output_folder', str(Path.home()), type=str))
+        layout.addWidget(self.inputs)
+        self.options = QGroupBox('2. Export settings')
+        options = QFormLayout(self.options)
+        self.shift = QDoubleSpinBox()
+        self.shift.setRange(-86400, 86400)
+        self.shift.setDecimals(3)
+        self.shift.setSingleStep(0.1)
+        self.shift.setSuffix(' s')
+        options.addRow('Audio &offset', self.shift)
+        help_text = QLabel('Positive values delay audio; negative values play it earlier.')
+        help_text.setWordWrap(True)
+        options.addRow(help_text)
+        self.format = QComboBox()
+        self.format.addItem('MP4 — common players', 'mp4')
+        self.format.addItem('MKV — broader video codec support', 'mkv')
+        options.addRow('Output &format', self.format)
+        self.shortest = QCheckBox('End when the shorter track finishes')
+        self.shortest.setChecked(True)
+        options.addRow(self.shortest)
+        note = QLabel('Uses the first video and audio tracks. Subtitles and additional tracks are omitted.\nExisting files are kept; each export gets a new filename.')
+        note.setWordWrap(True)
+        note.setMinimumHeight(note.fontMetrics().lineSpacing() * 4)
+        options.addRow(note)
+        layout.addWidget(self.options)
+        self.progress = QProgressBar()
+        self.progress.setValue(0)
+        layout.addWidget(self.progress)
+        self.status = QLabel('Choose a video and replacement audio to begin.')
+        self.status.setTextFormat(Qt.PlainText)
+        self.status.setWordWrap(True)
+        self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.status)
         layout.addStretch()
-
-        self.start_button = QPushButton("Start Process")
+        actions = QHBoxLayout()
+        self.open_button = QPushButton('Open output folder')
+        self.open_button.setEnabled(False)
+        self.open_button.clicked.connect(self.open_output)
+        actions.addWidget(self.open_button)
+        actions.addStretch()
+        self.cancel_button = QPushButton('Cancel')
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self.cancel)
+        actions.addWidget(self.cancel_button)
+        self.start_button = QPushButton('Replace audio')
+        self.start_button.setDefault(True)
         self.start_button.clicked.connect(self.start_process)
-        layout.addWidget(self.start_button)
+        actions.addWidget(self.start_button)
+        layout.addLayout(actions)
+        for field in (self.video, self.audio, self.folder):
+            field.textChanged.connect(self.update_ready)
+        self.update_ready()
 
-        self.setLayout(layout)
+    def file_row(self, form, title, kind):
+        row = QHBoxLayout()
+        field = QLineEdit()
+        field.setPlaceholderText('Choose a folder…' if kind == 'folder' else 'Choose a file…')
+        field.setMinimumWidth(280)
+        field.textChanged.connect(field.setToolTip)
+        button = QPushButton('Browse…')
+        button.setAccessibleName('Browse ' + title.replace('&', '').lower())
+        button.clicked.connect(lambda: self.browse(field, kind))
+        row.addWidget(field, 1)
+        row.addWidget(button)
+        label = QLabel(title)
+        label.setBuddy(field)
+        form.addRow(label, row)
+        return field
 
-        # Timer for animating dots
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.update_replacing_label)
-        self.dot_count = 0
+    def browse(self, field, kind):
+        initial = field.text() or self.settings.value('last_folder', str(Path.home()), type=str)
+        if kind == 'folder':
+            selected = QFileDialog.getExistingDirectory(self, 'Choose output folder', initial)
+        else:
+            filters = ('Media files (*.mp4 *.mkv *.mov *.avi *.webm *.m4v *.mp3 *.wav *.flac *.ogg *.m4a *.aac *.opus);;All files (*)')
+            selected, _ = QFileDialog.getOpenFileName(self, 'Choose ' + kind, initial, filters)
+        if selected:
+            field.setText(selected)
+            self.settings.setValue('last_folder', str(Path(selected).parent))
 
-    def select_video_with_audio(self):
-        self.video_with_audio_path, _ = QFileDialog.getOpenFileName(self, "Select Video with Desired Audio", "", "Video files (*.mp4 *.avi *.mov *.mkv)")
-        if self.video_with_audio_path:
-            self.label_video_with_audio.setText(f"<span style='color:gray;'>Selected: {self.video_with_audio_path}</span>")
-
-    def select_video_other(self):
-        self.video_other_path, _ = QFileDialog.getOpenFileName(self, "Select Video to Replace Audio", "", "Video files (*.mp4 *.avi *.mov *.mkv)")
-        if self.video_other_path:
-            self.label_video_other.setText(f"<span style='color:gray;'>Selected: {self.video_other_path}</span>")
-
-    def select_output_directory(self):
-        self.output_directory = QFileDialog.getExistingDirectory(self, "Select Directory to Save Output Video")
-        if self.output_directory:
-            self.label_output_directory.setText(f"<span style='color:gray;'>Selected: {self.output_directory}</span>")
+    def update_ready(self):
+        self.start_button.setEnabled(self.worker is None and all(
+            field.text().strip() for field in (self.video, self.audio, self.folder)))
 
     def start_process(self):
-        if not self.video_with_audio_path or not self.video_other_path or not self.output_directory:
-            QMessageBox.critical(self, "Error", "Please select all required files and directory.")
+        if self.worker is not None:
             return
+        self.output = ''
+        self.pending_result = None
+        self.open_button.setEnabled(False)
+        self.inputs.setEnabled(False)
+        self.options.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.progress.setRange(0, 0)
+        self.status.setText('Checking media and replacing audio…')
+        self.settings.setValue('output_folder', self.folder.text())
+        self.worker = ExportThread((self.video.text(), self.audio.text(), self.folder.text(),
+                                    self.shift.value(), self.format.currentData(),
+                                    self.shortest.isChecked()), self)
+        self.worker.progress.connect(self.show_progress)
+        self.worker.result.connect(self.save_result)
+        self.worker.finished.connect(self.finish)
+        self.update_ready()
+        self.worker.start()
 
-        self.audio_shift = self.input_audio_shift.text()
+    def show_progress(self, value):
+        self.progress.setRange(0, 100)
+        self.progress.setValue(value)
 
-        # Disable button
-        self.start_button.setEnabled(False)
+    def save_result(self, outcome, message):
+        self.pending_result = (outcome, message)
 
-        # Start the spinner animation
-        self.spinner_label.setVisible(True)
-        self.spinner_movie.start()
+    def finish(self):
+        outcome, message = self.pending_result or ('error', 'The export ended unexpectedly.')
+        self.worker.deleteLater()
+        self.worker = None
+        self.inputs.setEnabled(True)
+        self.options.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(100 if outcome == 'success' else 0)
+        self.update_ready()
+        if outcome == 'success':
+            self.output = message
+            self.status.setText('Saved: ' + message)
+            self.open_button.setEnabled(True)
+        elif outcome == 'cancelled':
+            self.status.setText('Export cancelled. You can adjust your settings and try again.')
+        else:
+            self.status.setText('Export failed. Check the details and try again.')
+            box = QMessageBox(QMessageBox.Critical, 'Could not replace audio',
+                              'The export could not be completed. If the video codec is incompatible with MP4, try MKV.', parent=self)
+            box.setDetailedText(message)
+            box.exec_()
 
-       # Start the replacing label animation
-        self.replacing_label.setVisible(True)
-        self.timer.start(100)  # Increase the speed of the animation
+    def cancel(self):
+        if self.worker:
+            self.worker.cancelled.set()
+            self.cancel_button.setEnabled(False)
+            self.status.setText('Cancelling export…')
 
-        self.ffmpeg_thread = FFMpegThread(self.video_other_path, self.video_with_audio_path, self.output_directory, self.audio_shift)
-        self.ffmpeg_thread.progress.connect(self.on_process_complete)
-        self.ffmpeg_thread.start()
+    def open_output(self):
+        if self.output:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(self.output).parent)))
 
-    def update_replacing_label(self):
-        self.dot_count = (self.dot_count + 1) % 4
-        dots = '.' * self.dot_count
-        self.replacing_label.setText(f"Replacing{dots:<3}")
+    def closeEvent(self, event):
+        if self.worker is not None:
+            event.ignore()
+            self.cancel()
+            self.status.setText('Cancelling export… Close the window again when it finishes.')
+        else:
+            event.accept()
 
-    def on_process_complete(self):
-        # Stop the spinner animation
-        self.spinner_movie.stop()
-        self.spinner_label.setVisible(False)
-
-        # Stop the replacing label animation
-        self.timer.stop()
-        self.replacing_label.setVisible(False)
-
-        # Enable button
-        self.start_button.setEnabled(True)
-
-        QMessageBox.information(self, "Process Complete", "Audio replaced successfully!")
 
 if __name__ == '__main__':
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
     app = QApplication(sys.argv)
-    ex = AudioSwopApp()
-    ex.show()
+    app.setApplicationName('Audio Swop')
+    window = AudioSwopApp()
+    window.show()
     sys.exit(app.exec_())

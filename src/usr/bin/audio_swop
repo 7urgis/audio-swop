@@ -1,9 +1,2 @@
-#!/bin/bash
-# This script launches the Audio Swop application.
-
-# Define the path to the main Python file
-APP_DIR="/usr/share/audio-swop"       # Directory where audio_swop.py is located
-PYTHON_SCRIPT="audio_swop.py"         # Main Python file name
-
-# Run the application
-python3 "$APP_DIR/$PYTHON_SCRIPT" "$@"
+#!/bin/sh
+exec /usr/bin/python3 /usr/share/audio-swop/audio_swop.py "$@"

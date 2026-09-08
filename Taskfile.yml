@@ -1,0 +1,129 @@
+version: '3'
+
+vars:
+  PYTHON: /usr/bin/python3
+  PACKAGE_VERSION:
+    sh: "awk '/^Version:/ {print $2}' src/DEBIAN/control"
+
+env:
+  PYTHON_BIN: '{{.PYTHON}}'
+  PYTHONDONTWRITEBYTECODE: '1'
+  DEB_PATH: '{{.ROOT_DIR}}/dist/audio-swop_{{.PACKAGE_VERSION}}_all.deb'
+
+tasks:
+  default:
+    desc: Show available commands
+    cmds:
+      - task --list
+
+  setup:
+    desc: Install Ubuntu/Mint runtime and build dependencies (uses sudo)
+    preconditions:
+      - sh: command -v apt-get
+        msg: This setup command requires an Ubuntu/Debian-based distribution.
+    cmds:
+      - sudo apt-get update
+      - sudo apt-get install python3 python3-pyqt5 ffmpeg dpkg-dev
+
+  doctor:
+    desc: Check Python, Qt, FFmpeg, and Debian build tools
+    preconditions:
+      - sh: '"$PYTHON_BIN" -c "import PyQt5.QtWidgets"'
+        msg: 'Python or PyQt5 is missing. Run task setup, or select a Python with PYTHON=/path/to/python.'
+      - sh: command -v ffmpeg && command -v ffprobe
+        msg: 'FFmpeg is missing. Run task setup.'
+      - sh: command -v dpkg-deb
+        msg: 'Debian build tools are missing. Run task setup.'
+    cmds:
+      - '"$PYTHON_BIN" --version'
+      - '"$PYTHON_BIN" -c "from PyQt5.QtCore import QT_VERSION_STR; print(\"Qt\", QT_VERSION_STR)"'
+      - echo 'Dependencies are ready.'
+
+  run:
+    desc: Launch the app from source
+    preconditions:
+      - sh: '"$PYTHON_BIN" -c "import PyQt5.QtWidgets"'
+        msg: 'PyQt5 is missing. Run task setup.'
+    cmds:
+      - '"$PYTHON_BIN" src/usr/share/audio-swop/audio_swop.py'
+
+  test:
+    desc: Run all media and UI tests without opening windows
+    cmds:
+      - task: test:runner
+        vars:
+          PATTERN: 'test_*.py'
+
+  test:media:
+    desc: Run FFmpeg integration tests only
+    cmds:
+      - task: test:runner
+        vars:
+          PATTERN: test_media.py
+
+  test:ui:
+    desc: Run UI tests without opening windows
+    cmds:
+      - task: test:runner
+        vars:
+          PATTERN: test_ui.py
+
+  test:runner:
+    internal: true
+    env:
+      QT_QPA_PLATFORM: offscreen
+      TEST_PATTERN: '{{.PATTERN}}'
+    preconditions:
+      - sh: '"$PYTHON_BIN" --version'
+        msg: 'Python is missing. Run task setup.'
+      - sh: 'test "$TEST_PATTERN" = test_media.py || "$PYTHON_BIN" -c "import PyQt5.QtWidgets"'
+        msg: 'UI tests require PyQt5. Run task setup; UI tests must not silently skip.'
+      - sh: 'test "$TEST_PATTERN" = test_ui.py || { command -v ffmpeg && command -v ffprobe; }'
+        msg: 'Media tests require FFmpeg. Run task setup.'
+    cmds:
+      - |
+        test_config=$(mktemp -d)
+        trap 'rm -rf "$test_config"' EXIT
+        export XDG_CONFIG_HOME="$test_config"
+        "$PYTHON_BIN" -m unittest discover -s tests -p "$TEST_PATTERN" -v
+
+  check:
+    desc: Check dependencies, run all tests, and build the package
+    cmds:
+      - task: doctor
+      - task: test
+      - task: build
+
+  build:
+    desc: Build the Debian package in dist/ using the version in DEBIAN/control
+    preconditions:
+      - sh: command -v dpkg-deb
+        msg: 'Debian build tools are missing. Run task setup.'
+    cmds:
+      - mkdir -p dist
+      - './scripts/build-deb.sh "$DEB_PATH"'
+
+  package:info:
+    desc: Build and inspect the Debian package metadata and contents
+    cmds:
+      - task: build
+      - 'dpkg-deb --info "$DEB_PATH"'
+      - 'dpkg-deb --contents "$DEB_PATH"'
+
+  install:
+    desc: Build and install the Debian package locally (uses sudo)
+    cmds:
+      - task: build
+      - 'sudo apt-get install "$DEB_PATH"'
+
+  uninstall:
+    desc: Remove the installed app (uses sudo)
+    cmds:
+      - sudo apt-get remove audio-swop
+
+  clean:
+    desc: Remove generated dist packages and Python caches; keep releases/
+    cmds:
+      - rm -rf -- dist
+      - find src tests -type d -name __pycache__ -prune -exec rm -rf {} +
+      - find src tests -type f -name '*.py[co]' -delete
