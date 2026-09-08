@@ -8,7 +8,7 @@ Build the updated package from this checkout:
 
 ```bash
 ./scripts/build-deb.sh
-sudo apt install /tmp/audio-swop_0.3.0_all.deb
+sudo apt install /tmp/audio-swop_0.3.1_all.deb
 ```
 
 Using `apt install` installs Python, Qt Multimedia, FFmpeg, and the GStreamer playback plugins. Launch **Audio Swop** from the applications menu, or run `audio_swop`. The package is architecture-independent. The old 0.1 package in `releases/` does not include these changes.
@@ -42,6 +42,12 @@ The player uses Qt Multimedia and GStreamer. `task setup` and the Debian package
 MP4 is useful for common players; choose MKV if MP4 cannot contain your original video codec. Existing files are never overwritten. Output names use `<video>_swapped.mp4` (or `.mkv`), adding a number when needed. Incomplete exports are cleaned up after errors or cancellation. The output folder must have enough free space for the new video.
 
 By default export ends with the shorter track. Uncheck this to keep the longer track's duration; audio is not looped or padded. Only the first non-cover-art video stream and first replacement audio stream are included; subtitles, attachments, and extra tracks are omitted. The app follows your Qt desktop theme and supports high-DPI displays.
+
+## Desktop appearance
+
+The app uses standard Qt widgets, system fonts and icons, and platform-specific button ordering. It follows your existing Qt desktop configuration without selecting a theme or installing extra theme packages. Appearance can differ from GTK apps on Ubuntu and Mint.
+
+Use `task run` with the default system Python to use the distribution's Qt installation. Preview playback and export work independently of the desktop theme.
 
 ## Project commands
 

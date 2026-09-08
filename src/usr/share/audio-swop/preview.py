@@ -3,7 +3,8 @@ from PyQt5.QtCore import Qt, QUrl, pyqtSignal
 from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer
 from PyQt5.QtMultimediaWidgets import QVideoWidget
 from PyQt5.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton, QSlider,
-                             QVBoxLayout)
+                             QVBoxLayout, QDialogButtonBox, QStyle)
+from desktop import themed_icon
 
 
 def timestamp(milliseconds):
@@ -44,11 +45,14 @@ class PreviewDialog(QDialog):
         layout.addWidget(self.seek)
         controls = QHBoxLayout()
         self.play = QPushButton('Play')
+        self.play.setIcon(themed_icon('media-playback-start', QStyle.SP_MediaPlay))
         self.play.clicked.connect(self.toggle_play)
         self.back = QPushButton('−5 s')
+        self.back.setIcon(themed_icon('media-seek-backward', QStyle.SP_MediaSeekBackward))
         self.back.setAccessibleName('Skip back five seconds')
         self.back.clicked.connect(lambda: self.skip(-5000))
         self.forward = QPushButton('+5 s')
+        self.forward.setIcon(themed_icon('media-seek-forward', QStyle.SP_MediaSeekForward))
         self.forward.setAccessibleName('Skip forward five seconds')
         self.forward.clicked.connect(lambda: self.skip(5000))
         self.time = QLabel('00:00:00 / 00:00:00')
@@ -68,15 +72,15 @@ class PreviewDialog(QDialog):
         self.message.setWordWrap(True)
         self.message.setTextFormat(Qt.PlainText)
         layout.addWidget(self.message)
-        actions = QHBoxLayout()
+        actions = QDialogButtonBox()
         adjust = QPushButton('Back to settings')
         adjust.clicked.connect(self.close)
-        actions.addWidget(adjust)
-        actions.addStretch()
+        actions.addButton(adjust, QDialogButtonBox.RejectRole)
         self.save = QPushButton('Save video')
         self.save.clicked.connect(self.saveRequested)
-        actions.addWidget(self.save)
-        layout.addLayout(actions)
+        self.save.setIcon(themed_icon('document-save', QStyle.SP_DialogSaveButton))
+        actions.addButton(self.save, QDialogButtonBox.AcceptRole)
+        layout.addWidget(actions)
         self.player.stateChanged.connect(self.state_changed)
         self.player.error.connect(self.playback_error)
 
@@ -111,7 +115,10 @@ class PreviewDialog(QDialog):
         self.time.setText(f'{timestamp(position)} / {timestamp(self.player.duration())}')
 
     def state_changed(self, state):
-        self.play.setText('Pause' if state == QMediaPlayer.PlayingState else 'Play')
+        playing = state == QMediaPlayer.PlayingState
+        self.play.setText('Pause' if playing else 'Play')
+        self.play.setIcon(themed_icon('media-playback-pause' if playing else 'media-playback-start',
+                                     QStyle.SP_MediaPause if playing else QStyle.SP_MediaPlay))
 
     def playback_error(self, _error):
         self.message.setText('Preview playback failed: ' + self.player.errorString() +
