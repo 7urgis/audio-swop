@@ -23,13 +23,13 @@ tasks:
         msg: This setup command requires an Ubuntu/Debian-based distribution.
     cmds:
       - sudo apt-get update
-      - sudo apt-get install python3 python3-pyqt5 ffmpeg dpkg-dev
+      - sudo apt-get install python3 python3-pyqt5 python3-pyqt5.qtmultimedia libqt5multimedia5-plugins gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-x ffmpeg dpkg-dev
 
   doctor:
     desc: Check Python, Qt, FFmpeg, and Debian build tools
     preconditions:
-      - sh: '"$PYTHON_BIN" -c "import PyQt5.QtWidgets"'
-        msg: 'Python or PyQt5 is missing. Run task setup, or select a Python with PYTHON=/path/to/python.'
+      - sh: '"$PYTHON_BIN" -c "import PyQt5.QtWidgets, PyQt5.QtMultimedia, PyQt5.QtMultimediaWidgets"'
+        msg: 'Python, PyQt5, or Qt Multimedia is missing. Run task setup, or select a Python with PYTHON=/path/to/python.'
       - sh: command -v ffmpeg && command -v ffprobe
         msg: 'FFmpeg is missing. Run task setup.'
       - sh: command -v dpkg-deb
@@ -42,8 +42,8 @@ tasks:
   run:
     desc: Launch the app from source
     preconditions:
-      - sh: '"$PYTHON_BIN" -c "import PyQt5.QtWidgets"'
-        msg: 'PyQt5 is missing. Run task setup.'
+      - sh: '"$PYTHON_BIN" -c "import PyQt5.QtWidgets, PyQt5.QtMultimedia, PyQt5.QtMultimediaWidgets"'
+        msg: 'PyQt5 or Qt Multimedia is missing. Run task setup.'
     cmds:
       - '"$PYTHON_BIN" src/usr/share/audio-swop/audio_swop.py'
 
@@ -76,8 +76,8 @@ tasks:
     preconditions:
       - sh: '"$PYTHON_BIN" --version'
         msg: 'Python is missing. Run task setup.'
-      - sh: 'test "$TEST_PATTERN" = test_media.py || "$PYTHON_BIN" -c "import PyQt5.QtWidgets"'
-        msg: 'UI tests require PyQt5. Run task setup; UI tests must not silently skip.'
+      - sh: 'test "$TEST_PATTERN" = test_media.py || "$PYTHON_BIN" -c "import PyQt5.QtWidgets, PyQt5.QtMultimedia, PyQt5.QtMultimediaWidgets"'
+        msg: 'UI tests require PyQt5 and Qt Multimedia. Run task setup; UI tests must not silently skip.'
       - sh: 'test "$TEST_PATTERN" = test_ui.py || { command -v ffmpeg && command -v ffprobe; }'
         msg: 'Media tests require FFmpeg. Run task setup.'
     cmds:

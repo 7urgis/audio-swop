@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-output=${1:-/tmp/audio-swop_0.2.0_all.deb}
+package_version=$(awk '/^Version:/ {print $2}' "$project_dir/src/DEBIAN/control")
+output=${1:-/tmp/audio-swop_${package_version}_all.deb}
 staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT HUP INT TERM
 cp -a "$project_dir/src/." "$staging/"

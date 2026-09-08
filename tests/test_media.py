@@ -5,9 +5,10 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/usr/share/audio-swop'))
-from media import Cancelled, build_command, export, probe, run_command
+from media import publish_file, Cancelled, build_command, export, probe, run_command
 
 
 class MediaTests(unittest.TestCase):
@@ -47,6 +48,28 @@ class MediaTests(unittest.TestCase):
             second = self.export()
         self.assertNotEqual(first, second)
         self.assertEqual(len(probe(second, self.cancelled)['streams']), 2)
+
+    def test_save_rendered_preview_preserves_bytes(self):
+        render_dir = self.root / 'preview'
+        render_dir.mkdir()
+        preview = Path(export(self.video, self.audio, render_dir, 0.25, 'mp4',
+                              True, self.cancelled, lambda value: None))
+        with unittest.mock.patch('media.run_command', side_effect=AssertionError('No re-encoding')):
+            result = publish_file(preview, self.root, 'saved', self.cancelled, lambda value: None)
+        self.assertEqual(Path(result).read_bytes(), preview.read_bytes())
+
+    def test_cancel_save_copy_keeps_preview_and_removes_partial(self):
+        import errno
+        from unittest.mock import patch
+        preview = self.root / 'preview.mp4'
+        preview.write_bytes(b'x' * (2 * 1024 * 1024))
+        def cancel_after_chunk(value):
+            self.cancelled.set()
+        with patch('media.os.link', side_effect=OSError(errno.EXDEV, 'Different filesystem')):
+            with self.assertRaises(Cancelled):
+                publish_file(preview, self.root, 'saved', self.cancelled, cancel_after_chunk)
+        self.assertTrue(preview.exists())
+        self.assertFalse((self.root / 'saved.mp4').exists())
 
     def test_offset_applies_to_audio(self):
         command = build_command(self.video, self.audio, self.root / 'out.mp4', 0.5, True)

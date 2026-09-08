@@ -100,36 +100,51 @@ def export(video, audio, directory, shift, extension, shortest, cancelled, progr
             raise Cancelled()
         if not partial.is_file() or partial.stat().st_size == 0:
             raise RuntimeError('FFmpeg produced an empty output file.')
-        base = video.stem[:150] + '_swapped'
-        number = 0
-        while True:
-            name = base + (f'_{number}' if number else '') + f'.{extension}'
-            destination = directory / name
+        return publish_file(partial, directory, video.stem[:150] + '_swapped', cancelled, progress)
+
+
+def publish_file(partial, directory, base, cancelled, progress):
+    """Save the reviewed bytes without re-encoding or overwriting existing files."""
+    partial, directory = Path(partial), Path(directory).expanduser().resolve()
+    if cancelled.is_set():
+        raise Cancelled()
+    if not directory.is_dir():
+        raise ValueError('Choose an existing output folder.')
+    if not partial.is_file() or not partial.stat().st_size:
+        raise ValueError('The rendered preview is missing or empty. Render it again.')
+    number = 0
+    while True:
+        name = base + (f'_{number}' if number else '') + partial.suffix
+        destination = directory / name
+        try:
+            os.link(partial, destination)
+            break
+        except FileExistsError:
+            number += 1
+        except OSError as error:
+            if error.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.EXDEV, errno.ENOSYS):
+                raise
+            # FAT/exFAT destinations may not support hard links.
             try:
-                os.link(partial, destination)
-                break
+                target = destination.open('xb')
             except FileExistsError:
                 number += 1
-            except OSError as error:
-                if error.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.EXDEV, errno.ENOSYS):
-                    raise
-                # FAT/exFAT destinations may not support hard links.
-                try:
-                    target = destination.open('xb')
-                except FileExistsError:
-                    number += 1
-                    continue
-                try:
-                    with target, partial.open('rb') as source:
-                        while True:
-                            if cancelled.is_set():
-                                raise Cancelled()
-                            chunk = source.read(1024 * 1024)
-                            if not chunk:
-                                break
-                            target.write(chunk)
-                except BaseException:
-                    destination.unlink()
-                    raise
-                break
-        return str(destination)
+                continue
+            try:
+                with target, partial.open('rb') as source:
+                    copied = 0
+                    total = partial.stat().st_size
+                    while True:
+                        if cancelled.is_set():
+                            raise Cancelled()
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        target.write(chunk)
+                        copied += len(chunk)
+                        progress(min(99, int(copied * 100 / total)))
+            except BaseException:
+                destination.unlink()
+                raise
+            break
+    return str(destination)
