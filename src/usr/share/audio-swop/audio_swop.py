@@ -1,4 +1,5 @@
 """Audio Swop desktop interface for Ubuntu and Linux Mint."""
+import os
 import sys
 import threading
 import tempfile
@@ -13,6 +14,35 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLa
 from media import export, publish_file, Cancelled
 from preview import PreviewDialog
 from desktop import themed_icon
+
+
+_NVIDIA_GST_HW_DECODERS = (
+    'nvh264dec', 'nvh265dec', 'nvav1dec',
+    'nvvp9dec', 'nvvp8dec', 'nvmpeg2videodec', 'nvmpeg4videodec',
+)
+
+
+def _disable_nvidia_gst_hw_decoders():
+    """Force software GStreamer video decoders on NVIDIA proprietary driver systems.
+
+    The nvcodec GStreamer plugin (from gstreamer1.0-plugins-bad) provides
+    hardware-accelerated NVIDIA decoders (nvh265dec, nvh264dec, …). These
+    decoders require a fully-installed CUDA toolkit and can segfault or produce
+    a silent black screen when CUDA is missing or the driver version mismatches.
+
+    This function disables those decoders at startup so GStreamer falls back to
+    the software avdec_* equivalents, which decode reliably on all systems.
+    The user can suppress this by setting GST_PLUGIN_FEATURE_RANK themselves.
+    """
+    if 'GST_PLUGIN_FEATURE_RANK' in os.environ:
+        return  # user has an explicit preference
+    if not Path('/proc/driver/nvidia/version').exists():
+        return  # not an NVIDIA proprietary driver system
+    os.environ['GST_PLUGIN_FEATURE_RANK'] = ','.join(
+        f'{dec}:NONE' for dec in _NVIDIA_GST_HW_DECODERS
+    )
+
+
 
 
 class ExportThread(QThread):
@@ -292,6 +322,7 @@ class AudioSwopApp(QWidget):
 
 
 if __name__ == '__main__':
+    _disable_nvidia_gst_hw_decoders()
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
     app = QApplication(sys.argv)

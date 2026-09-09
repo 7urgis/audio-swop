@@ -1,7 +1,9 @@
 """Review a rendered export using the desktop's Qt/GStreamer player."""
-from PyQt5.QtCore import Qt, QUrl, pyqtSignal
-from PyQt5.QtMultimedia import QMediaContent, QMediaPlayer
-from PyQt5.QtMultimediaWidgets import QVideoWidget
+from PyQt5.QtCore import Qt, QUrl, pyqtSignal, pyqtSlot
+from PyQt5.QtGui import QImage, QPixmap
+from PyQt5.QtMultimedia import (QAbstractVideoBuffer, QAbstractVideoSurface,
+                                 QMediaContent, QMediaPlayer,
+                                 QVideoFrame, QVideoSurfaceFormat)
 from PyQt5.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton, QSlider,
                              QVBoxLayout, QDialogButtonBox, QStyle)
 from desktop import themed_icon
@@ -12,6 +14,57 @@ def timestamp(milliseconds):
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
     return f'{hours:02}:{minutes:02}:{seconds:02}'
+
+
+class _RgbVideoSurface(QAbstractVideoSurface):
+    """Video surface that paints frames onto a QLabel via QPixmap.
+
+    Accepts only QVideoFrame.Format_RGB32, forcing GStreamer to convert YUV
+    frames to plain CPU-memory RGB before delivery. This bypasses
+    QVideoWidget's GL/EGL texture rendering which paints solid black on
+    NVIDIA proprietary drivers with compositing window managers such as
+    Cinnamon's Muffin.
+
+    present() may be called from a GStreamer worker thread, so the pixmap
+    update is marshalled to the GUI thread via a queued signal.
+    """
+
+    _frame_ready = pyqtSignal(QImage)
+
+    def __init__(self, label):
+        super().__init__()
+        self._label = label
+        self._frame_ready.connect(self._set_pixmap, Qt.QueuedConnection)
+
+    @pyqtSlot(QImage)
+    def _set_pixmap(self, image):
+        if not image.isNull():
+            self._label.setPixmap(
+                QPixmap.fromImage(image).scaled(
+                    self._label.size(), Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation))
+
+    def supportedPixelFormats(self, handle_type=QAbstractVideoBuffer.NoHandle):
+        if handle_type == QAbstractVideoBuffer.NoHandle:
+            return [QVideoFrame.Format_RGB32]
+        return []
+
+    def present(self, frame):
+        if not frame.isValid():
+            return False
+        if not frame.map(QAbstractVideoBuffer.ReadOnly):
+            return False
+        try:
+            # .copy() detaches the QImage from the frame buffer before unmap().
+            image = QImage(
+                frame.bits(), frame.width(), frame.height(),
+                frame.bytesPerLine(), QImage.Format_RGB32,
+            ).copy()
+        finally:
+            frame.unmap()
+        if not image.isNull():
+            self._frame_ready.emit(image)
+        return True
 
 
 class PreviewDialog(QDialog):
@@ -27,11 +80,14 @@ class PreviewDialog(QDialog):
         self.summary.setTextFormat(Qt.PlainText)
         self.summary.setWordWrap(True)
         layout.addWidget(self.summary)
-        self.video = QVideoWidget()
+        self.video = QLabel()
         self.video.setMinimumSize(320, 180)
+        self.video.setAlignment(Qt.AlignCenter)
+        self.video.setStyleSheet('background-color: black;')
         layout.addWidget(self.video, 1)
+        self._surface = _RgbVideoSurface(self.video)
         self.player = QMediaPlayer(self, QMediaPlayer.VideoSurface)
-        self.player.setVideoOutput(self.video)
+        self.player.setVideoOutput(self._surface)
         self.player.setVolume(80)
         self.seek = QSlider(Qt.Horizontal)
         self.seek.setAccessibleName('Playback position')
@@ -128,6 +184,7 @@ class PreviewDialog(QDialog):
     def clear(self):
         self.player.stop()
         self.player.setMedia(QMediaContent())
+        self.video.setPixmap(QPixmap())  # clear the video frame
         self.close()
 
     def reject(self):

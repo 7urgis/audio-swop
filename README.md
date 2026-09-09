@@ -16,7 +16,7 @@ Using `apt install` installs Python, Qt Multimedia, FFmpeg, and the GStreamer pl
 To run directly from source:
 
 ```bash
-sudo apt install python3-pyqt5 python3-pyqt5.qtmultimedia libqt5multimedia5-plugins gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-x ffmpeg
+sudo apt install python3-pyqt5 python3-pyqt5.qtmultimedia libqt5multimedia5-plugins gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-x gstreamer1.0-qt5 ffmpeg
 /usr/bin/python3 src/usr/share/audio-swop/audio_swop.py
 ```
 
