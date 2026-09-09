@@ -15,6 +15,7 @@ from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QPushButton, QVBoxLa
 from media import export, publish_file, Cancelled
 from preview import PreviewDialog
 from desktop import themed_icon
+from edits import AudioSection
 
 
 _NVIDIA_GST_HW_DECODERS = (
@@ -76,6 +77,10 @@ class AudioSwopApp(QWidget):
         self.preview_dialog = None
         self.operation = 'preview'
         self.pending_result = None
+        self.audio_sections = None
+        self.rendered_sections = None
+        self.preview_dirty = False
+        self.resume_position = 0
         self.settings = QSettings('AudioSwop', 'AudioSwop')
         self.setWindowTitle('Audio Swop')
         self.setWindowIcon(QIcon.fromTheme('audio-swop', themed_icon('audio-x-generic', QStyle.SP_MediaVolume)))
@@ -158,6 +163,7 @@ class AudioSwopApp(QWidget):
         for field in (self.video, self.audio, self.folder):
             field.textChanged.connect(self.update_ready)
         for field in (self.video, self.audio):
+            field.textChanged.connect(self.reset_audio_edits)
             field.textChanged.connect(self.invalidate_preview)
         self.shift.valueChanged.connect(self.invalidate_preview)
         self.audio_label.textChanged.connect(self.invalidate_preview)
@@ -197,15 +203,19 @@ class AudioSwopApp(QWidget):
         idle = self.worker is None
         self.start_button.setEnabled(idle and all(
             field.text().strip() for field in (self.video, self.audio, self.folder)))
-        self.save_button.setEnabled(idle and bool(self.preview_path) and bool(self.folder.text().strip()))
+        self.save_button.setEnabled(idle and bool(self.preview_path) and not self.preview_dirty
+                                    and bool(self.folder.text().strip()))
         self.review_button.setEnabled(idle and bool(self.preview_path))
         if self.preview_dialog:
             self.preview_dialog.save.setEnabled(self.save_button.isEnabled())
 
     def invalidate_preview(self):
+        self.discard_preview()
+
+    def discard_preview(self, keep_dialog=False):
         had_preview = bool(self.preview_path)
         if self.preview_dialog:
-            self.preview_dialog.clear()
+            self.preview_dialog.clear(close=not keep_dialog)
         self.preview_path = ''
         if self.preview_directory:
             self.preview_directory.cleanup()
@@ -215,10 +225,36 @@ class AudioSwopApp(QWidget):
             self.progress.setValue(0)
         self.update_ready()
 
-    def start_process(self):
+    def reset_audio_edits(self):
+        self.audio_sections = None
+        self.rendered_sections = None
+        self.preview_dirty = False
+        self.resume_position = 0
+        if self.preview_dialog:
+            self.preview_dialog.editor.configure(None, self.shift.value(), reset_history=True)
+
+    def set_audio_edits(self, sections):
+        self.audio_sections = list(sections)
+        self.preview_dirty = (not self.preview_path or self.audio_sections !=
+                              (self.rendered_sections or [AudioSection()]))
+        self.preview_dialog.set_dirty(self.preview_dirty)
+        self.status.setText('Audio edits pending. Update the preview before saving.' if self.preview_dirty
+                            else 'Preview matches the audio edits. Ready to save.')
+        self.update_ready()
+
+    def apply_preview_edits(self):
+        if self.worker is None:
+            position = self.preview_dialog.player.position() if self.preview_path else self.resume_position
+            self.start_process(resume_position=position, keep_dialog=True)
+
+    def start_process(self, checked=False, resume_position=0, keep_dialog=False):
         if self.worker is not None:
             return
-        self.invalidate_preview()
+        self.resume_position = resume_position
+        self.discard_preview(keep_dialog)
+        self.preview_dirty = True
+        if self.preview_dialog:
+            self.preview_dialog.set_dirty(True)
         try:
             # Keep preview on the output filesystem so saving can be instant.
             self.preview_directory = tempfile.TemporaryDirectory(
@@ -230,7 +266,8 @@ class AudioSwopApp(QWidget):
         self.operation = 'preview'
         self.begin_work((self.video.text(), self.audio.text(), self.preview_directory.name,
                          self.shift.value(), self.format.currentData(), self.shortest.isChecked()),
-                        partial(export, audio_label=self.audio_label.text()),
+                        partial(export, audio_label=self.audio_label.text(),
+                                sections=list(self.audio_sections) if self.audio_sections is not None else None),
                         'Rendering preview… No final video is saved yet.')
 
     def review_preview(self):
@@ -239,12 +276,21 @@ class AudioSwopApp(QWidget):
         if self.preview_dialog is None:
             self.preview_dialog = PreviewDialog(self)
             self.preview_dialog.saveRequested.connect(self.save_preview)
-        self.preview_dialog.load(self.preview_path, self.shift.value())
+            self.preview_dialog.editsChanged.connect(self.set_audio_edits)
+            self.preview_dialog.renderRequested.connect(self.apply_preview_edits)
+            self.preview_dialog.cancelRequested.connect(self.cancel)
+        self.preview_dialog.editor.configure(self.audio_sections, self.shift.value())
+        if self.resume_position:
+            self.preview_dialog.load(self.preview_path, self.shift.value(), self.resume_position)
+            self.resume_position = 0
+        else:
+            self.preview_dialog.load(self.preview_path, self.shift.value())
+        self.preview_dialog.set_dirty(self.preview_dirty)
         self.preview_dialog.raise_()
         self.update_ready()
 
     def save_preview(self):
-        if not self.preview_path or self.worker is not None:
+        if not self.preview_path or self.preview_dirty or self.worker is not None:
             return
         if self.preview_dialog:
             self.preview_dialog.close()
@@ -265,12 +311,16 @@ class AudioSwopApp(QWidget):
         self.worker.progress.connect(self.show_progress)
         self.worker.result.connect(self.save_result)
         self.worker.finished.connect(self.finish)
+        if self.preview_dialog:
+            self.preview_dialog.set_busy(True)
         self.update_ready()
         self.worker.start()
 
     def show_progress(self, value):
         self.progress.setRange(0, 100)
         self.progress.setValue(value)
+        if self.preview_dialog:
+            self.preview_dialog.show_progress(value)
 
     def save_result(self, outcome, message):
         self.pending_result = (outcome, message)
@@ -282,12 +332,16 @@ class AudioSwopApp(QWidget):
         self.inputs.setEnabled(True)
         self.options.setEnabled(True)
         self.cancel_button.setEnabled(False)
+        if self.preview_dialog:
+            self.preview_dialog.set_busy(False)
         self.progress.setRange(0, 100)
         self.progress.setValue(100 if outcome == 'success' else 0)
         self.update_ready()
         if outcome == 'success':
             if self.operation == 'preview':
                 self.preview_path = message
+                self.rendered_sections = list(self.audio_sections) if self.audio_sections is not None else None
+                self.preview_dirty = False
                 self.status.setText('Preview ready. Review the sync, then click Save video.')
                 self.review_preview()
             else:
@@ -296,7 +350,9 @@ class AudioSwopApp(QWidget):
                 self.open_button.setEnabled(True)
         else:
             if self.operation == 'preview':
-                self.invalidate_preview()
+                self.discard_preview(keep_dialog=True)
+                if self.preview_dialog:
+                    self.preview_dialog.set_dirty(True)
             if outcome == 'cancelled':
                 self.status.setText('Cancelled. Your preview is still available.' if self.preview_path
                                     else 'Preview cancelled. Adjust settings and try again.')
@@ -313,6 +369,8 @@ class AudioSwopApp(QWidget):
             self.worker.cancelled.set()
             self.cancel_button.setEnabled(False)
             self.status.setText('Cancelling…')
+            if self.preview_dialog:
+                self.preview_dialog.cancel_render.setEnabled(False)
 
     def open_output(self):
         if self.output:

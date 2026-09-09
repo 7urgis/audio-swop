@@ -11,9 +11,12 @@ try:
     from PyQt5.QtWidgets import QApplication, QFileDialog
     from PyQt5.QtTest import QTest
     from audio_swop import AudioSwopApp
+    from audio_editor import AudioEditor
+    from preview import PreviewDialog
 except ImportError:
     QApplication = None
 from unittest.mock import patch
+from edits import AudioSection
 
 
 @unittest.skipIf(QApplication is None, 'PyQt5 Multimedia is not installed')
@@ -116,6 +119,66 @@ class InterfaceTests(unittest.TestCase):
         self.wait_for_worker()
         self.assertEqual(Path(self.window.output).parent, other)
 
+    def test_audio_edits_require_render_before_saving_and_resume_review(self):
+        self.render()
+        sections = [AudioSection(0, 10, 0), AudioSection(10, None, 11)]
+        self.window.set_audio_edits(sections)
+        self.assertFalse(self.window.save_button.isEnabled())
+        with patch('audio_swop.publish_file') as publish:
+            self.window.save_preview()
+            publish.assert_not_called()
+        self.preview.player.position.return_value = 12000
+        with patch('audio_swop.export', side_effect=self.render_fixture) as render:
+            self.window.apply_preview_edits()
+            self.wait_for_worker()
+        self.assertEqual(render.call_args.kwargs['sections'], sections)
+        self.preview.load.assert_called_with(self.window.preview_path, 0, 12000)
+        self.assertTrue(self.window.save_button.isEnabled())
+        self.assertFalse(self.window.preview_dirty)
+        preview_bytes = Path(self.window.preview_path).read_bytes()
+        self.window.save_preview()
+        self.wait_for_worker()
+        self.assertEqual(Path(self.window.output).read_bytes(), preview_bytes)
+
+    def test_cancelled_edit_render_keeps_sections_for_retry(self):
+        from media import Cancelled
+        self.render()
+        sections = [AudioSection(0, 10, 0), AudioSection(10, None, 11)]
+        self.window.set_audio_edits(sections)
+        self.preview.player.position.return_value = 12000
+        def cancel_render(*args, **kwargs):
+            args[-2].wait(2)
+            raise Cancelled()
+        with patch('audio_swop.export', side_effect=cancel_render):
+            self.window.apply_preview_edits()
+            self.window.cancel()
+            self.wait_for_worker()
+        self.assertEqual(self.window.audio_sections, sections)
+        self.assertFalse(self.window.save_button.isEnabled())
+        self.assertTrue(self.window.preview_dirty)
+        with patch('audio_swop.export', side_effect=self.render_fixture) as render:
+            self.window.apply_preview_edits()
+            self.wait_for_worker()
+        self.assertEqual(render.call_args.kwargs['sections'], sections)
+        self.assertTrue(self.window.save_button.isEnabled())
+
+    def test_edits_survive_settings_changes_but_reset_for_new_source(self):
+        self.render()
+        sections = [AudioSection(1, None, 5)]
+        self.window.set_audio_edits(sections)
+        self.window.shift.setValue(0.5)
+        self.assertEqual(self.window.audio_sections, sections)
+        self.window.format.setCurrentIndex(1)
+        self.assertEqual(self.window.audio_sections, sections)
+        self.window.audio.setText('/tmp/other.wav')
+        self.assertIsNone(self.window.audio_sections)
+
+    def test_undo_to_rendered_edits_allows_saving_without_render(self):
+        self.render()
+        self.window.set_audio_edits([AudioSection(1, None, 5)])
+        self.window.set_audio_edits([AudioSection()])
+        self.assertTrue(self.window.save_button.isEnabled())
+
     def test_cancelled_render_cleans_up(self):
         from media import Cancelled
         def cancelled_render(*args, **kwargs):
@@ -157,3 +220,95 @@ class InterfaceTests(unittest.TestCase):
             self.wait_for_worker()
         self.assertFalse(directory.exists())
         self.assertTrue(self.window.close())
+
+
+@unittest.skipIf(QApplication is None, 'PyQt5 Multimedia is not installed')
+class AudioEditorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.editor = AudioEditor()
+        self.editor.resize(1000, 400)
+        self.editor.show()
+        self.addCleanup(self.editor.close)
+        self.editor.set_duration(30000)
+        QTest.qWait(10)
+
+    def test_split_shift_trim_remove_and_undo(self):
+        self.editor.set_position(10000)
+        self.editor.split.click()
+        self.assertEqual(self.editor.sections, [AudioSection(0, 10, 0), AudioSection(10, None, 10)])
+        self.editor.later.click()
+        self.assertEqual(self.editor.sections[1].position, 10.1)
+        self.assertEqual(self.editor.sections[0], AudioSection(0, 10, 0))
+        self.editor.table.cellWidget(1, 2).setValue(20)
+        self.assertEqual(self.editor.sections[1].end, 20)
+        self.editor.remove.click()
+        self.assertEqual(self.editor.sections, [AudioSection(0, 10, 0)])
+        self.editor.undo.click()
+        self.assertEqual(self.editor.sections[1], AudioSection(10, 20, 10.1))
+
+    def test_moving_following_sections_is_optional(self):
+        self.editor.configure([AudioSection(0, 10, 0), AudioSection(10, 20, 10), AudioSection(20, None, 20)], 1)
+        self.editor.select(1)
+        self.editor.later.click()
+        self.assertEqual([s.position for s in self.editor.sections], [0, 10.1, 20.1])
+        self.editor.following.setChecked(False)
+        self.editor.earlier.click()
+        self.assertEqual([s.position for s in self.editor.sections], [0, 10, 20.1])
+        self.editor.set_position(15000)
+        self.editor.to_playhead.click()
+        self.assertEqual(self.editor.sections[1].position, 14)
+
+    def test_timeline_drag_moves_section_and_ruler_seeks(self):
+        from PyQt5.QtCore import QPoint, Qt
+        self.editor.configure([AudioSection(0, 5, 0), AudioSection(5, 10, 10)], 0)
+        timeline = self.editor.timeline
+        x = round(timeline.x(12))
+        end_x = round(timeline.x(14))
+        QTest.mousePress(timeline, Qt.LeftButton, pos=QPoint(x, 45))
+        QTest.mouseRelease(timeline, Qt.LeftButton, pos=QPoint(end_x, 45))
+        self.assertAlmostEqual(self.editor.sections[1].position, 12, delta=0.1)
+        positions = []
+        self.editor.seekRequested.connect(positions.append)
+        QTest.mouseClick(timeline, Qt.LeftButton, pos=QPoint(round(timeline.x(7)), 10))
+        self.assertAlmostEqual(positions[-1], 7000, delta=50)
+
+    def test_rendering_disables_edit_controls(self):
+        self.editor.set_dirty(True)
+        self.assertTrue(self.editor.apply.isEnabled())
+        self.editor.set_busy(True)
+        for widget in (self.editor.table, self.editor.timeline, self.editor.split, self.editor.apply):
+            self.assertFalse(widget.isEnabled())
+        self.editor.set_busy(False)
+        self.assertTrue(self.editor.apply.isEnabled())
+
+    def test_new_source_clears_undo_even_after_reset(self):
+        self.editor.move_section(0, 1)
+        self.editor.reset.click()
+        self.assertTrue(self.editor.undo.isEnabled())
+        self.editor.configure(None, 0, reset_history=True)
+        self.assertFalse(self.editor.undo.isEnabled())
+        self.editor.undo_edit()
+        self.assertEqual(self.editor.sections, [AudioSection()])
+
+    def test_real_preview_forwards_edits_and_restores_seek_when_ready(self):
+        dialog = PreviewDialog()
+        self.addCleanup(dialog.close)
+        edits = []
+        dialog.editsChanged.connect(edits.append)
+        dialog.editor.set_position(10000)
+        dialog.editor.split.click()
+        self.assertEqual(len(edits[0]), 2)
+        dialog.set_dirty(True)
+        self.assertFalse(dialog.save.isEnabled())
+        self.assertTrue(dialog.editor.apply.isEnabled())
+        with patch.object(dialog.player, 'isSeekable', return_value=True), \
+                patch.object(dialog.player, 'duration', return_value=30000), \
+                patch.object(dialog.player, 'setPosition') as seek:
+            dialog.pending_seek = 12000
+            dialog.restore_position()
+            dialog.restore_position()
+            seek.assert_called_once_with(12000)

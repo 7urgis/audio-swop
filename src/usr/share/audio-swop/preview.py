@@ -5,8 +5,10 @@ from PyQt5.QtMultimedia import (QAbstractVideoBuffer, QAbstractVideoSurface,
                                  QMediaContent, QMediaPlayer,
                                  QVideoFrame, QVideoSurfaceFormat)
 from PyQt5.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton, QSlider,
-                             QVBoxLayout, QDialogButtonBox, QStyle)
+                             QVBoxLayout, QDialogButtonBox, QStyle, QProgressBar,
+                             QScrollArea, QFrame)
 from desktop import themed_icon
+from audio_editor import AudioEditor
 
 
 def timestamp(milliseconds):
@@ -69,11 +71,15 @@ class _RgbVideoSurface(QAbstractVideoSurface):
 
 class PreviewDialog(QDialog):
     saveRequested = pyqtSignal()
+    editsChanged = pyqtSignal(object)
+    renderRequested = pyqtSignal()
+    cancelRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Review soundtrack — Audio Swop')
-        self.resize(900, 620)
+        self.resize(1000, 820)
+        self.pending_seek = None
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         layout = QVBoxLayout(self)
         self.summary = QLabel()
@@ -124,14 +130,35 @@ class PreviewDialog(QDialog):
         self.volume.valueChanged.connect(self.player.setVolume)
         controls.addWidget(self.volume)
         layout.addLayout(controls)
-        self.message = QLabel('Review the sync, then save. To adjust the offset, return to settings and render again.')
+        self.editor = AudioEditor()
+        self.editor.editsChanged.connect(self.audio_edited)
+        self.editor.renderRequested.connect(self.renderRequested)
+        self.editor.seekRequested.connect(self.player.setPosition)
+        editor_scroll = QScrollArea()
+        editor_scroll.setWidgetResizable(True)
+        editor_scroll.setFrameShape(QFrame.NoFrame)
+        editor_scroll.setMinimumHeight(220)
+        editor_scroll.setMaximumHeight(440)
+        editor_scroll.setWidget(self.editor)
+        layout.addWidget(editor_scroll, 2)
+        self.render_progress = QProgressBar()
+        self.render_progress.hide()
+        layout.addWidget(self.render_progress)
+        self.message = QLabel('Review the sync. Split and move audio sections below the player to fix timing changes.')
         self.message.setWordWrap(True)
         self.message.setTextFormat(Qt.PlainText)
         layout.addWidget(self.message)
         actions = QDialogButtonBox()
+        # Keep the render action visible even when the editor needs scrolling.
+        self.editor.layout().removeWidget(self.editor.apply)
+        actions.addButton(self.editor.apply, QDialogButtonBox.ActionRole)
         adjust = QPushButton('Back to settings')
         adjust.clicked.connect(self.close)
         actions.addButton(adjust, QDialogButtonBox.RejectRole)
+        self.cancel_render = QPushButton('Cancel rendering')
+        self.cancel_render.clicked.connect(self.cancelRequested)
+        actions.addButton(self.cancel_render, QDialogButtonBox.ActionRole)
+        self.cancel_render.hide()
         self.save = QPushButton('Save video')
         self.save.clicked.connect(self.saveRequested)
         self.save.setIcon(themed_icon('document-save', QStyle.SP_DialogSaveButton))
@@ -139,14 +166,52 @@ class PreviewDialog(QDialog):
         layout.addWidget(actions)
         self.player.stateChanged.connect(self.state_changed)
         self.player.error.connect(self.playback_error)
+        self.player.mediaStatusChanged.connect(self.restore_position)
+        self.player.seekableChanged.connect(self.restore_position)
+        self.cancel_render.hide()
 
-    def load(self, path, offset):
+    def load(self, path, offset, resume_position=0):
         self.summary.setText(f'Rendered preview · audio offset {offset:+.3f} s\nThe saved video will use this exact picture and soundtrack.')
-        self.message.setText('Review the sync, then save. To adjust the offset, return to settings and render again.')
+        self.message.setText('Review the sync. Split and move audio sections below the player to fix timing changes.')
+        self.pending_seek = resume_position if resume_position > 0 else None
         self.player.setMedia(QMediaContent(QUrl.fromLocalFile(path)))
         self.play.setEnabled(True)
         self.show()
         self.player.play()
+
+    def restore_position(self, *args):
+        if self.pending_seek is not None and self.player.isSeekable() and self.player.duration() > 0:
+            position, self.pending_seek = self.pending_seek, None
+            self.player.setPosition(min(position, self.player.duration()))
+
+    def audio_edited(self, sections):
+        self.player.pause()
+        self.editsChanged.emit(sections)
+
+    def set_dirty(self, dirty):
+        self.editor.set_dirty(dirty)
+        if dirty:
+            self.save.setEnabled(False)
+            self.message.setText('Playback still uses the last render. Click Update preview with edits to hear your changes.')
+        else:
+            self.message.setText('Preview matches the audio edits. Review the sync, then save.')
+
+    def set_busy(self, busy):
+        self.editor.set_busy(busy)
+        self.render_progress.setVisible(busy)
+        self.cancel_render.setVisible(busy)
+        self.cancel_render.setEnabled(busy)
+        for widget in (self.play, self.back, self.forward):
+            widget.setEnabled(not busy)
+        if busy:
+            self.player.pause()
+            self.save.setEnabled(False)
+            self.render_progress.setRange(0, 0)
+            self.message.setText('Rendering the edited preview… Your section edits are kept if you cancel.')
+
+    def show_progress(self, value):
+        self.render_progress.setRange(0, 100)
+        self.render_progress.setValue(value)
 
     def toggle_play(self):
         if self.player.state() == QMediaPlayer.PlayingState:
@@ -163,9 +228,13 @@ class PreviewDialog(QDialog):
 
     def duration_changed(self, duration):
         self.seek.setRange(0, duration)
+        if duration > 0:
+            self.editor.set_duration(duration)
+        self.restore_position()
         self.position_changed(self.player.position())
 
     def position_changed(self, position):
+        self.editor.set_position(position)
         if not self.seek.isSliderDown():
             self.seek.setValue(position)
         self.time.setText(f'{timestamp(position)} / {timestamp(self.player.duration())}')
@@ -181,11 +250,13 @@ class PreviewDialog(QDialog):
                              '\nCheck that your system has the required media codecs. The rendered file can still be saved.')
         self.play.setEnabled(False)
 
-    def clear(self):
+    def clear(self, close=True):
+        self.pending_seek = None
         self.player.stop()
         self.player.setMedia(QMediaContent())
         self.video.setPixmap(QPixmap())  # clear the video frame
-        self.close()
+        if close:
+            self.close()
 
     def reject(self):
         self.player.pause()

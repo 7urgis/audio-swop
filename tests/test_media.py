@@ -1,4 +1,7 @@
 import os
+import array
+import math
+import wave
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +12,7 @@ import unittest.mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/usr/share/audio-swop'))
 from media import publish_file, Cancelled, build_command, export, probe, run_command
+from edits import AudioSection
 
 
 class MediaTests(unittest.TestCase):
@@ -28,7 +32,65 @@ class MediaTests(unittest.TestCase):
         return export(self.video, kwargs.get('audio', self.audio), self.root,
                       kwargs.get('shift', 0), kwargs.get('extension', 'mp4'),
                       kwargs.get('shortest', True), self.cancelled, lambda value: None,
-                      audio_label=kwargs.get('audio_label', 'New audio'))
+                      audio_label=kwargs.get('audio_label', 'New audio'),
+                      sections=kwargs.get('sections'))
+
+    def two_tone_audio(self):
+        samples = array.array('h', (int(8000 * math.sin(2 * math.pi *
+                              (440 if n < 8000 else 880) * n / 8000)) for n in range(16000)))
+        with wave.open(str(self.audio), 'wb') as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(8000)
+            output.writeframes(samples.tobytes())
+
+    def decoded_audio(self, path):
+        data = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(path),
+                                       '-map', '0:a:0', '-ac', '1', '-ar', '8000', '-f', 's16le', '-'])
+        samples = array.array('h')
+        samples.frombytes(data)
+        return samples
+
+    def assert_tone(self, samples, start, frequency):
+        region = samples[round(start * 8000):round((start + 0.1) * 8000)]
+        self.assertEqual(len(region), 800)
+        power = abs(sum(sample * complex(math.cos(2 * math.pi * frequency * n / 8000),
+                                        math.sin(2 * math.pi * frequency * n / 8000))
+                        for n, sample in enumerate(region))) / len(region)
+        self.assertGreater(power, 2500)
+
+    def test_middle_shift_inserts_silence_and_keeps_correct_source_audio(self):
+        self.two_tone_audio()
+        sections = [AudioSection(0, 1, 0), AudioSection(1, None, 1.5)]
+        for extension in ('mp4', 'mkv'):
+            with self.subTest(extension=extension):
+                output = self.export(sections=sections, shortest=False, extension=extension)
+                samples = self.decoded_audio(output)
+                self.assert_tone(samples, 0.2, 440)
+                self.assert_tone(samples, 1.7, 880)
+                silence = samples[round(1.15 * 8000):round(1.35 * 8000)]
+                self.assertLess(math.sqrt(sum(s * s for s in silence) / len(silence)), 30)
+                self.assertAlmostEqual(float(probe(output, self.cancelled)['format']['duration']), 2.5, delta=0.15)
+
+    def test_earlier_section_replaces_overlap_and_trims_end(self):
+        self.two_tone_audio()
+        output = self.export(sections=[AudioSection(0, 1, 0), AudioSection(1, 1.75, 0.5)], shift=-0.1)
+        samples = self.decoded_audio(output)
+        self.assert_tone(samples, 0.1, 440)
+        self.assert_tone(samples, 0.6, 880)
+        self.assertAlmostEqual(float(probe(output, self.cancelled)['format']['duration']), 1.15, delta=0.15)
+
+    def test_edited_export_keeps_original_tracks_and_new_label(self):
+        self.multitrack_video()
+        result = self.export(sections=[AudioSection(0.25, 1, 0.5), AudioSection(1, None, 1.5)],
+                             audio_label='Edited dub', extension='mkv')
+        streams = probe(result, self.cancelled)['streams']
+        self.assertEqual([s['codec_type'] for s in streams],
+                         ['video', 'audio', 'audio', 'audio', 'subtitle', 'subtitle'])
+        self.assertEqual(streams[1]['tags']['title'], 'Edited dub')
+        self.assertEqual(streams[1]['disposition']['default'], 1)
+        self.assertEqual(streams[2]['tags']['title'], 'Original')
+        self.assertEqual(streams[2]['disposition']['default'], 0)
 
     def multitrack_video(self):
         subtitles = self.root / 'captions.srt'

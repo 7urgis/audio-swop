@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from edits import arrange_sections
 
 
 class Cancelled(Exception):
@@ -43,11 +44,32 @@ def probe(path, cancelled):
 
 
 def build_command(video, audio, output, shift, shortest, audio_label='New audio',
-                  video_info=None, duration=None):
+                  video_info=None, duration=None, sections=None, audio_info=None):
     # Offset only the replacement audio. Argument lists keep filenames literal.
     command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
-               '-i', str(video), '-itsoffset', str(shift), '-i', str(audio),
-               '-map', '0:V:0', '-map', '1:a:0', '-map', '0:a?', '-map', '0:s?',
+               '-i', str(video)]
+    if sections is None:
+        command += ['-itsoffset', str(shift), '-i', str(audio)]
+        new_audio = '1:a:0'
+    else:
+        filters = []
+        # Seek independent inputs to avoid buffering hours of audio in asplit/atrim.
+        for index, section in enumerate(sections):
+            length = section.end - section.start
+            command += ['-ss', str(section.start), '-t', str(length), '-i', str(audio)]
+            filters.append(f'[{index + 1}:a:0]asetpts=PTS-STARTPTS,'
+                           f'atrim=duration={length},'
+                           f'adelay=delays={section.position * 1000}:all=1[part{index}]')
+        inputs = ''.join(f'[part{i}]' for i in range(len(sections)))
+        filters.append(inputs + f'amix=inputs={len(sections)}:normalize=0:duration=longest[edited]')
+        command += ['-filter_complex', ';'.join(filters)]
+        source_audio = next((s for s in (audio_info or {}).get('streams', [])
+                             if s.get('codec_type') == 'audio'), {})
+        language = source_audio.get('tags', {}).get('language')
+        if language:
+            command += ['-metadata:s:a:0', 'language=' + language]
+        new_audio = '[edited]'
+    command += ['-map', '0:V:0', '-map', new_audio, '-map', '0:a?', '-map', '0:s?',
                '-c', 'copy', '-c:a:0', 'aac', '-b:a:0', '192k',
                '-disposition:a', '-default', '-disposition:a:0', 'default',
                '-metadata:s:a:0', 'title=' + (audio_label.strip() or 'New audio'),
@@ -91,7 +113,7 @@ def track_duration(info, kind):
 
 
 def export(video, audio, directory, shift, extension, shortest, cancelled, progress,
-           audio_label='New audio'):
+           audio_label='New audio', sections=None):
     for tool in ('ffmpeg', 'ffprobe'):
         if not shutil.which(tool):
             raise RuntimeError('FFmpeg is missing. Install it with: sudo apt install ffmpeg')
@@ -118,12 +140,20 @@ def export(video, audio, directory, shift, extension, shortest, cancelled, progr
             for s in video_info.get('streams', []) if s.get('codec_type') == 'subtitle'):
         raise ValueError('MP4 cannot keep these image-based subtitles. Choose MKV output.')
     duration = track_duration(video_info, 'video') or 0
+    audio_duration = track_duration(audio_info, 'audio')
+    arranged = None
+    if sections is not None:
+        if audio_duration is None:
+            raise ValueError('Could not determine the source audio duration for editing.')
+        arranged = arrange_sections(sections, audio_duration, shift)
+        audio_end = max(s.position + s.end - s.start for s in arranged)
+    else:
+        audio_end = audio_duration + shift if audio_duration is not None else None
     end_time = None
     if shortest:
-        audio_duration = track_duration(audio_info, 'audio')
-        if not duration or audio_duration is None:
+        if not duration or audio_end is None:
             raise ValueError('Could not determine track durations. Uncheck the shorter-track option and render again.')
-        end_time = min(duration, audio_duration + shift)
+        end_time = min(duration, audio_end)
         if end_time <= 0:
             raise ValueError('The audio offset moves the entire new audio track before the video.')
 
@@ -141,7 +171,7 @@ def export(video, audio, directory, shift, extension, shortest, cancelled, progr
     with tempfile.TemporaryDirectory(prefix='.audio-swop-', dir=directory) as temporary:
         partial = Path(temporary) / f'export.{extension}'
         run_command(build_command(video, audio, partial, shift, shortest, audio_label,
-                                  video_info, end_time), cancelled, report)
+                                  video_info, end_time, arranged, audio_info), cancelled, report)
         if cancelled.is_set():
             raise Cancelled()
         if not partial.is_file() or partial.stat().st_size == 0:

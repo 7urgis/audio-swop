@@ -1,95 +1,88 @@
 # Audio Swop
 
-A small native Qt desktop app for adding a new soundtrack to a video, designed for Ubuntu and Linux Mint. The video, existing audio tracks, and subtitles are kept. The first audio track from your new file is encoded as AAC and becomes the default audio track.
+Audio Swop is a small Qt app for replacing a video's soundtrack. It is designed and tested on Ubuntu 26.04 and Linux Mint 22.3.
 
-## Install on Ubuntu or Linux Mint
+It keeps the original video, audio tracks, and subtitles. The first audio track from the new file is added as AAC and made the default track. Video and existing audio are copied without re-encoding.
 
-Build the updated package from this checkout:
+## Install
 
-```bash
-./scripts/build-deb.sh
-sudo apt install /tmp/audio-swop_0.3.1_all.deb
-```
+To install Audio Swop on Ubuntu or Linux Mint:
 
-Using `apt install` installs Python, Qt Multimedia, FFmpeg, and the GStreamer playback plugins. Launch **Audio Swop** from the applications menu, or run `audio_swop`. The package is architecture-independent. The old 0.1 package in `releases/` does not include these changes.
-
-To run directly from source:
+1. Download the latest `.deb` file from the [GitHub Releases page](https://github.com/7urgis/audio-swop/releases).
+2. Install the downloaded file. For example, if it is in your Downloads folder:
 
 ```bash
-sudo apt install python3-pyqt5 python3-pyqt5.qtmultimedia libqt5multimedia5-plugins gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-x gstreamer1.0-qt5 ffmpeg
-/usr/bin/python3 src/usr/share/audio-swop/audio_swop.py
+sudo apt install ~/Downloads/audio-swop_*.deb
 ```
 
-Use the system Python so it can find the distribution's Qt bindings. No pip install is needed for the packaged application.
+This also installs the required Python, Qt Multimedia, FFmpeg, and playback packages. Start **Audio Swop** from the applications menu or run `audio_swop`.
 
-## Use
-
-1. Choose the video whose picture you want to keep.
-2. Choose new audio from a video or audio file and enter its **New audio label** (for example, “Lithuanian dub”). This name appears in media players; leaving it blank uses “New audio”.
-3. Choose an output folder and MP4 or MKV format.
-4. Set an optional audio offset: positive delays audio, negative advances it.
-5. Click **Render preview**. Progress and cancellation are available while rendering.
-6. Review the result in the built-in player: play/pause, seek, skip back/forward five seconds, and adjust the volume.
-7. If the sync is off, choose **Back to settings**, adjust the offset, and render again.
-8. When it looks right, click **Save video**. This saves the exact reviewed file without re-encoding.
-
-**Review preview** reopens the rendered result. Changing a media input, audio label, offset, format, or duration setting discards the old preview and disables saving until you render again. You can change the output folder without re-rendering. A failed or cancelled save keeps the preview available for another attempt.
-
-This is a rendered preview, not live audio mixing: the full video must finish rendering before playback. Video is still copied without re-encoding. Temporary previews are stored in a hidden folder inside your selected output folder and removed when replaced or when the app closes normally. On filesystems that support hard links, saving in the same filesystem does not duplicate the video data; saving elsewhere may require a full copy and extra free space. An app crash or forced termination can leave a `.audio-swop-preview-*` folder behind.
-
-The player uses Qt Multimedia and GStreamer. `task setup` and the Debian package install the playback dependencies. If a codec cannot be played, the preview shows an error and the rendered video can still be saved for review in another player.
-
-MP4 is useful for common players; choose MKV if MP4 cannot contain your original video or audio codecs. MP4 converts text subtitles to its supported text format, which can lose styling; image-based subtitles require MKV. MKV copies subtitles and attachments (including subtitle fonts), converting MP4 text subtitles to SRT when needed. Unsupported tracks cause an error instead of being silently dropped. Existing files are never overwritten. Output names use `<video>_swapped.mp4` (or `.mkv`), adding a number when needed. Incomplete exports are cleaned up after errors or cancellation. The output folder must have enough free space for the new video.
-
-By default export ends when the video or new audio finishes first, accounting for the new audio offset. Short existing audio or subtitle tracks do not shorten the export. Uncheck this to keep the full duration of all included tracks; audio is not looped or padded. The first non-cover-art video stream, all existing audio and subtitle streams, and the first audio stream from the new file are included. Existing audio is copied without re-encoding, and the offset applies only to the new audio. The new audio is first and marked as default; existing tracks remain selectable in players with track selection. The app follows your Qt desktop theme and supports high-DPI displays.
-
-## Desktop appearance
-
-The app uses standard Qt widgets, system fonts and icons, and platform-specific button ordering. It follows your existing Qt desktop configuration without selecting a theme or installing extra theme packages. Appearance can differ from GTK apps on Ubuntu and Mint.
-
-Use `task run` with the default system Python to use the distribution's Qt installation. Preview playback and export work independently of the desktop theme.
-
-## Project commands
-
-Install [Task](https://taskfile.dev/docs/installation) (the `go-task` command runner, version 3), then run `task` to see the available commands.
-
-| Command | Action |
-| --- | --- |
-| `task setup` | Install Ubuntu/Mint dependencies using sudo |
-| `task doctor` | Check Python, Qt, FFmpeg, and package tools |
-| `task run` | Launch the app from source |
-| `task test` | Run all tests with the UI offscreen |
-| `task test:media` | Run FFmpeg integration tests |
-| `task test:ui` | Run offscreen UI tests |
-| `task check` | Check dependencies, run all tests, and build |
-| `task build` | Build the `.deb` package in `dist/` |
-| `task package:info` | Build and inspect the package |
-| `task install` | Build and install the app using sudo |
-| `task uninstall` | Remove the installed app using sudo |
-| `task clean` | Remove `dist/` and Python caches, preserving `releases/` |
-
-Typical workflow:
+To rebuild the package from source instead:
 
 ```bash
 task setup
-task run
-task check
 task install
 ```
 
-Package filenames follow the version in `src/DEBIAN/control`. Task uses `/usr/bin/python3` by default to find Ubuntu/Mint's Qt bindings. Override it when needed, for example `task test PYTHON=/path/to/venv/bin/python`. Tests use temporary Qt settings so they do not change your saved app preferences. Task requires PyQt5 and Qt Multimedia for UI tests rather than silently skipping them.
+## Use
 
-The direct commands remain available if you do not use Task:
+1. Choose the video to keep.
+2. Choose a video or audio file for the new soundtrack. Add a label such as `Lithuanian dub` if needed.
+3. Choose an output folder and MP4 or MKV format.
+4. Set an optional audio offset. A positive value delays the new audio; a negative value moves it earlier.
+5. Click **Render preview** and review the result in the built-in player.
+6. When it is correct, click **Save video**. The reviewed file is saved without another re-encode.
+
+The preview must finish rendering before it can be played. You can play, pause, seek, skip five seconds, and change the volume. Changing an input, label, offset, format, or duration setting requires a new preview. Changing only the output folder does not.
+
+## Fix sync changes
+
+For a sync problem that begins at a particular point:
+
+1. Pause the preview at the problem point.
+2. Select the audio section and click **Split at playhead**.
+3. Move the new section with **Earlier**, **Later**, the timeline, or **Video start**.
+4. Click **Update preview with edits**.
+
+You can also trim a section with **Source in** and **Source out**, remove a section, undo changes, or reset all edits. Gaps become silence. Overlapping sections are not mixed; the later section replaces the earlier one. **Also move following sections** is enabled by default.
+
+Use the global audio offset for one timing change across the whole soundtrack. This editor does not correct gradual drift by changing audio speed.
+
+## Formats and duration
+
+- Choose MP4 for broad player compatibility. Choose MKV when the original codecs or image-based subtitles need it.
+- Existing audio and subtitle tracks are kept. Unsupported tracks cause an error instead of being silently dropped.
+- Text subtitle styling may change in MP4. MKV preserves subtitles and attachments more reliably.
+- By default, export ends when the video or new audio ends first. You can disable this to keep the full length of all included tracks; audio is not looped or padded.
+- Existing files are never overwritten. Output names use `<video>_swapped.mp4` or `.mkv`, with a number added when needed.
+
+## Development
+
+Install dependencies and see all available commands with:
 
 ```bash
-/usr/bin/python3 -m unittest discover -s tests -v
-QT_QPA_PLATFORM=offscreen /usr/bin/python3 -m unittest discover -s tests -p 'test_ui.py' -v
-./scripts/build-deb.sh
+task setup
+task
 ```
 
-Media tests generate small fixtures with FFmpeg and cover successful exports, offsets, unusual filenames, output collisions, cancellation, and error cleanup. Preview tests cover exact-byte saving, settings invalidation, save retries, and temporary-file cleanup. UI tests skip when PyQt5 is unavailable. A real desktop session is still needed to check native file dialogs and desktop integration on each distribution.
+Useful commands:
 
-To uninstall:
+| Command | Purpose |
+| --- | --- |
+| `task run` | Run the app from source |
+| `task test` | Run all tests |
+| `task test:media` | Run FFmpeg integration tests |
+| `task test:ui` | Run offscreen UI tests |
+| `task check` | Check dependencies, test, and build |
+| `task clean` | Remove generated packages and Python caches |
+
+To run directly from source without Task, install the Ubuntu/Mint dependencies listed by `task setup`, then run:
+
+```bash
+/usr/bin/python3 src/usr/share/audio-swop/audio_swop.py
+```
+
+To uninstall the packaged app:
 
 ```bash
 sudo apt remove audio-swop
