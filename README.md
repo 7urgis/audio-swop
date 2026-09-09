@@ -1,5 +1,9 @@
 # Audio Swop
 
+<p align="center">
+	<img src="src/usr/share/pixmaps/audio-swop.png" alt="Audio Swop logo" width="180">
+</p>
+
 Audio Swop is a small Qt app for replacing a video's soundtrack. It is designed and tested on Ubuntu 26.04 and Linux Mint 22.3.
 
 It keeps the original video, audio tracks, and subtitles. The first audio track from the new file is added as AAC and made the default track. Video and existing audio are copied without re-encoding.
