@@ -27,7 +27,74 @@ class MediaTests(unittest.TestCase):
     def export(self, **kwargs):
         return export(self.video, kwargs.get('audio', self.audio), self.root,
                       kwargs.get('shift', 0), kwargs.get('extension', 'mp4'),
-                      True, self.cancelled, lambda value: None)
+                      kwargs.get('shortest', True), self.cancelled, lambda value: None,
+                      audio_label=kwargs.get('audio_label', 'New audio'))
+
+    def multitrack_video(self):
+        subtitles = self.root / 'captions.srt'
+        subtitles.write_text('1\n00:00:00,100 --> 00:00:00,400\nHello world\n')
+        source = self.root / 'multitrack.mkv'
+        subprocess.run(['ffmpeg', '-v', 'error', '-i', str(self.video),
+                        '-i', str(self.audio), '-f', 'lavfi', '-i',
+                        'sine=frequency=880:duration=0.5', '-i', str(subtitles),
+                        '-map', '0:v', '-map', '1:a', '-map', '2:a',
+                        '-map', '3:s', '-map', '3:s', '-c:v', 'copy', '-c:a', 'aac',
+                        '-c:s', 'srt', '-metadata:s:a:0', 'title=Original',
+                        '-metadata:s:a:0', 'language=eng', '-disposition:a:0', 'default',
+                        '-metadata:s:a:1', 'title=Commentary', '-disposition:a:1', 'comment',
+                        '-metadata:s:s:0', 'language=eng', '-metadata:s:s:1', 'language=lit',
+                        '-disposition:s:1', 'forced', str(source)], check=True)
+        self.video = source
+
+    def test_preserve_audio_subtitles_and_label(self):
+        self.multitrack_video()
+        for extension in ('mp4', 'mkv'):
+            with self.subTest(extension=extension):
+                result = self.export(extension=extension, shift=0.25,
+                                     audio_label="Lietuvių ' & $(dub)")
+                info = probe(result, self.cancelled)
+                audio = [s for s in info['streams'] if s['codec_type'] == 'audio']
+                subtitles = [s for s in info['streams'] if s['codec_type'] == 'subtitle']
+                self.assertEqual(len(audio), 3)
+                self.assertEqual(len(subtitles), 2)
+                label_key = 'handler_name' if extension == 'mp4' else 'title'
+                self.assertEqual(audio[0]['tags'][label_key], "Lietuvių ' & $(dub)")
+                self.assertEqual([s['disposition']['default'] for s in audio], [1, 0, 0])
+                self.assertEqual(audio[1]['tags']['language'], 'eng')
+                self.assertEqual(audio[1]['tags'][label_key], 'Original')
+                self.assertEqual(audio[2]['tags'][label_key], 'Commentary')
+                self.assertAlmostEqual(float(audio[0]['start_time']), 0.25, delta=0.05)
+                self.assertAlmostEqual(float(audio[1]['start_time']), 0, delta=0.05)
+                self.assertEqual([s['tags']['language'] for s in subtitles], ['eng', 'lit'])
+                self.assertEqual(subtitles[1]['disposition']['forced'], 1)
+                # Short commentary and subtitles must not truncate the main video.
+                self.assertGreater(float(info['format']['duration']), 1.9)
+                for index in range(2):
+                    extracted = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', result,
+                        '-map', f'0:s:{index}', '-f', 'srt', '-'])
+                    self.assertIn(b'Hello world', extracted)
+                if extension == 'mkv':
+                    self.assertEqual(audio[1]['tags']['title'], 'Original')
+                    self.assertEqual(audio[2]['tags']['title'], 'Commentary')
+                    self.assertEqual(audio[2]['disposition']['comment'], 1)
+
+    def test_mp4_subtitles_can_be_exported_to_mkv(self):
+        self.multitrack_video()
+        self.video = Path(self.export())
+        result = probe(self.export(extension='mkv'), self.cancelled)
+        subtitles = [s for s in result['streams'] if s['codec_type'] == 'subtitle']
+        self.assertEqual([s['codec_name'] for s in subtitles], ['subrip', 'subrip'])
+
+    def test_bitmap_subtitles_require_mkv(self):
+        source_info = probe(self.video, self.cancelled)
+        source_info['streams'].append({'codec_type': 'subtitle', 'codec_name': 'hdmv_pgs_subtitle'})
+        with unittest.mock.patch('media.probe', side_effect=[source_info, probe(self.audio, self.cancelled)]):
+            with self.assertRaisesRegex(ValueError, 'Choose MKV'):
+                self.export()
+
+    def test_blank_label_uses_default(self):
+        info = probe(self.export(audio_label='  ', extension='mkv'), self.cancelled)
+        self.assertEqual(info['streams'][1]['tags']['title'], 'New audio')
 
     def test_export_literal_paths_and_unique_outputs(self):
         first = Path(self.export())

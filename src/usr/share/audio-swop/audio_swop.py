@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import tempfile
+from functools import partial
 from pathlib import Path
 
 from PyQt5.QtCore import QThread, Qt, QUrl, QSettings, pyqtSignal
@@ -80,43 +81,47 @@ class AudioSwopApp(QWidget):
         self.setWindowIcon(QIcon.fromTheme('audio-swop', themed_icon('audio-x-generic', QStyle.SP_MediaVolume)))
         self.resize(660, 480)
         layout = QVBoxLayout(self)
-        subtitle = QLabel("Replace a video's soundtrack, then preview it before saving.")
+        subtitle = QLabel("Add a new soundtrack while keeping existing audio and subtitles, then preview before saving.")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
         self.inputs = QGroupBox('Files')
         form = QFormLayout(self.inputs)
         self.video = self.file_row(form, '&Video to keep', 'video')
-        self.audio = self.file_row(form, '&Replacement audio', 'audio')
+        self.audio = self.file_row(form, '&New audio', 'audio')
         self.folder = self.file_row(form, '&Output folder', 'folder')
         self.folder.setText(self.settings.value('output_folder', str(Path.home()), type=str))
         layout.addWidget(self.inputs)
         self.options = QGroupBox('Audio and output')
         options = QFormLayout(self.options)
+        self.audio_label = QLineEdit('New audio')
+        self.audio_label.setPlaceholderText('New audio')
+        self.audio_label.setToolTip('Track name shown in media players. The new audio is the default track.')
+        options.addRow('New audio &label', self.audio_label)
         self.shift = QDoubleSpinBox()
         self.shift.setRange(-86400, 86400)
         self.shift.setDecimals(3)
         self.shift.setSingleStep(0.1)
         self.shift.setSuffix(' s')
-        self.shift.setToolTip('Video is copied without re-encoding. Replacement audio is encoded as AAC.')
+        self.shift.setToolTip('Only the new audio is shifted and encoded as AAC. Existing audio is copied.')
         options.addRow('Audio &offset', self.shift)
         help_text = QLabel('Positive values delay audio; negative values play it earlier.')
         help_text.setWordWrap(True)
         options.addRow(help_text)
         self.format = QComboBox()
         self.format.addItem('MP4 — common players', 'mp4')
-        self.format.addItem('MKV — broader video codec support', 'mkv')
+        self.format.addItem('MKV — broader codec and subtitle support', 'mkv')
         options.addRow('Output &format', self.format)
-        self.shortest = QCheckBox('End when the shorter track finishes')
+        self.shortest = QCheckBox('End when the video or new audio finishes first')
         self.shortest.setChecked(True)
         options.addRow(self.shortest)
-        note = QLabel('First video/audio tracks only; subtitles are omitted.\nEach saved video gets a unique filename.')
+        note = QLabel('Existing audio and subtitles are kept. New audio plays by default.\nUse MKV to preserve subtitle styling and image-based subtitles.\nEach saved video gets a unique filename.')
         note.setWordWrap(True)
         options.addRow(note)
         layout.addWidget(self.options)
         self.progress = QProgressBar()
         self.progress.setValue(0)
         layout.addWidget(self.progress)
-        self.status = QLabel('Choose a video and replacement audio to begin.')
+        self.status = QLabel('Choose a video and new audio to begin.')
         self.status.setTextFormat(Qt.PlainText)
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -155,6 +160,7 @@ class AudioSwopApp(QWidget):
         for field in (self.video, self.audio):
             field.textChanged.connect(self.invalidate_preview)
         self.shift.valueChanged.connect(self.invalidate_preview)
+        self.audio_label.textChanged.connect(self.invalidate_preview)
         self.format.currentIndexChanged.connect(self.invalidate_preview)
         self.shortest.toggled.connect(self.invalidate_preview)
         self.update_ready()
@@ -224,7 +230,8 @@ class AudioSwopApp(QWidget):
         self.operation = 'preview'
         self.begin_work((self.video.text(), self.audio.text(), self.preview_directory.name,
                          self.shift.value(), self.format.currentData(), self.shortest.isChecked()),
-                        export, 'Rendering preview… No final video is saved yet.')
+                        partial(export, audio_label=self.audio_label.text()),
+                        'Rendering preview… No final video is saved yet.')
 
     def review_preview(self):
         if not self.preview_path or self.worker is not None:
@@ -296,7 +303,7 @@ class AudioSwopApp(QWidget):
             else:
                 self.status.setText('Could not complete the operation. Check the details and try again.')
                 box = QMessageBox(QMessageBox.Critical, 'Could not complete video',
-                                  'Check the files and output folder. For video codecs incompatible with MP4, try MKV.', parent=self)
+                                  'Check the files and output folder. For video, audio, or subtitles incompatible with MP4, try MKV.', parent=self)
                 box.setDetailedText(message)
                 box.exec_()
         self.update_ready()

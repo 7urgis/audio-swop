@@ -1,6 +1,6 @@
 # Audio Swop
 
-A small native Qt desktop app for replacing a video's soundtrack, designed for Ubuntu and Linux Mint. The video is copied without re-encoding and the first audio track from your replacement file is encoded as AAC.
+A small native Qt desktop app for adding a new soundtrack to a video, designed for Ubuntu and Linux Mint. The video, existing audio tracks, and subtitles are kept. The first audio track from your new file is encoded as AAC and becomes the default audio track.
 
 ## Install on Ubuntu or Linux Mint
 
@@ -25,7 +25,7 @@ Use the system Python so it can find the distribution's Qt bindings. No pip inst
 ## Use
 
 1. Choose the video whose picture you want to keep.
-2. Choose replacement audio from a video or audio file.
+2. Choose new audio from a video or audio file and enter its **New audio label** (for example, “Lithuanian dub”). This name appears in media players; leaving it blank uses “New audio”.
 3. Choose an output folder and MP4 or MKV format.
 4. Set an optional audio offset: positive delays audio, negative advances it.
 5. Click **Render preview**. Progress and cancellation are available while rendering.
@@ -33,15 +33,15 @@ Use the system Python so it can find the distribution's Qt bindings. No pip inst
 7. If the sync is off, choose **Back to settings**, adjust the offset, and render again.
 8. When it looks right, click **Save video**. This saves the exact reviewed file without re-encoding.
 
-**Review preview** reopens the rendered result. Changing a media input, offset, format, or duration setting discards the old preview and disables saving until you render again. You can change the output folder without re-rendering. A failed or cancelled save keeps the preview available for another attempt.
+**Review preview** reopens the rendered result. Changing a media input, audio label, offset, format, or duration setting discards the old preview and disables saving until you render again. You can change the output folder without re-rendering. A failed or cancelled save keeps the preview available for another attempt.
 
 This is a rendered preview, not live audio mixing: the full video must finish rendering before playback. Video is still copied without re-encoding. Temporary previews are stored in a hidden folder inside your selected output folder and removed when replaced or when the app closes normally. On filesystems that support hard links, saving in the same filesystem does not duplicate the video data; saving elsewhere may require a full copy and extra free space. An app crash or forced termination can leave a `.audio-swop-preview-*` folder behind.
 
 The player uses Qt Multimedia and GStreamer. `task setup` and the Debian package install the playback dependencies. If a codec cannot be played, the preview shows an error and the rendered video can still be saved for review in another player.
 
-MP4 is useful for common players; choose MKV if MP4 cannot contain your original video codec. Existing files are never overwritten. Output names use `<video>_swapped.mp4` (or `.mkv`), adding a number when needed. Incomplete exports are cleaned up after errors or cancellation. The output folder must have enough free space for the new video.
+MP4 is useful for common players; choose MKV if MP4 cannot contain your original video or audio codecs. MP4 converts text subtitles to its supported text format, which can lose styling; image-based subtitles require MKV. MKV copies subtitles and attachments (including subtitle fonts), converting MP4 text subtitles to SRT when needed. Unsupported tracks cause an error instead of being silently dropped. Existing files are never overwritten. Output names use `<video>_swapped.mp4` (or `.mkv`), adding a number when needed. Incomplete exports are cleaned up after errors or cancellation. The output folder must have enough free space for the new video.
 
-By default export ends with the shorter track. Uncheck this to keep the longer track's duration; audio is not looped or padded. Only the first non-cover-art video stream and first replacement audio stream are included; subtitles, attachments, and extra tracks are omitted. The app follows your Qt desktop theme and supports high-DPI displays.
+By default export ends when the video or new audio finishes first, accounting for the new audio offset. Short existing audio or subtitle tracks do not shorten the export. Uncheck this to keep the full duration of all included tracks; audio is not looped or padded. The first non-cover-art video stream, all existing audio and subtitle streams, and the first audio stream from the new file are included. Existing audio is copied without re-encoding, and the offset applies only to the new audio. The new audio is first and marked as default; existing tracks remain selectable in players with track selection. The app follows your Qt desktop theme and supports high-DPI displays.
 
 ## Desktop appearance
 

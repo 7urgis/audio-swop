@@ -42,20 +42,56 @@ def probe(path, cancelled):
     return json.loads(result)
 
 
-def build_command(video, audio, output, shift, shortest):
+def build_command(video, audio, output, shift, shortest, audio_label='New audio',
+                  video_info=None, duration=None):
     # Offset only the replacement audio. Argument lists keep filenames literal.
     command = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin', '-y',
                '-i', str(video), '-itsoffset', str(shift), '-i', str(audio),
-               '-map', '0:V:0', '-map', '1:a:0', '-c:v', 'copy', '-c:a', 'aac',
-               '-b:a', '192k']
+               '-map', '0:V:0', '-map', '1:a:0', '-map', '0:a?', '-map', '0:s?',
+               '-c', 'copy', '-c:a:0', 'aac', '-b:a:0', '192k',
+               '-disposition:a', '-default', '-disposition:a:0', 'default',
+               '-metadata:s:a:0', 'title=' + (audio_label.strip() or 'New audio'),
+               '-metadata:s:a:0', 'handler_name=' + (audio_label.strip() or 'New audio')]
     if shortest:
-        command += ['-shortest']
+        # -shortest would also stop at the end of a short commentary/subtitle track.
+        command += ['-t', str(duration)] if duration is not None else ['-shortest']
     if output.suffix.lower() == '.mp4':
-        command += ['-movflags', '+faststart']
+        command += ['-c:s', 'mov_text', '-movflags', '+faststart']
+        original_audio = [s for s in (video_info or {}).get('streams', [])
+                          if s.get('codec_type') == 'audio']
+        for index, stream in enumerate(original_audio, 1):
+            title = stream.get('tags', {}).get('title')
+            if title:
+                command += [f'-metadata:s:a:{index}', 'handler_name=' + title]
+    else:
+        # Preserve fonts used by styled subtitles as well as other attachments.
+        command += ['-map', '0:t?']
+        subtitles = [s for s in (video_info or {}).get('streams', [])
+                     if s.get('codec_type') == 'subtitle']
+        for index, stream in enumerate(subtitles):
+            if stream.get('codec_name') == 'mov_text':
+                command += [f'-c:s:{index}', 'srt']
     return command + ['-progress', 'pipe:1', '-nostats', str(output)]
 
 
-def export(video, audio, directory, shift, extension, shortest, cancelled, progress):
+def track_duration(info, kind):
+    stream = next(s for s in info['streams'] if s.get('codec_type') == kind
+                  and not s.get('disposition', {}).get('attached_pic'))
+    for value in (stream.get('duration'), stream.get('tags', {}).get('DURATION'),
+                  info.get('format', {}).get('duration')):
+        try:
+            seconds = 0.0
+            for part in str(value).split(':'):
+                seconds = seconds * 60 + float(part)
+            if math.isfinite(seconds) and seconds > 0:
+                return seconds
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def export(video, audio, directory, shift, extension, shortest, cancelled, progress,
+           audio_label='New audio'):
     for tool in ('ffmpeg', 'ffprobe'):
         if not shutil.which(tool):
             raise RuntimeError('FFmpeg is missing. Install it with: sudo apt install ffmpeg')
@@ -77,10 +113,19 @@ def export(video, audio, directory, shift, extension, shortest, cancelled, progr
         raise ValueError('The selected video does not contain a video track.')
     if not any(s.get('codec_type') == 'audio' for s in audio_info.get('streams', [])):
         raise ValueError('The replacement audio file does not contain an audio track.')
-    try:
-        duration = float(video_info.get('format', {}).get('duration', 0))
-    except (ValueError, TypeError):
-        duration = 0
+    if extension == 'mp4' and any(s.get('codec_name') in
+            ('hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb_subtitle', 'xsub')
+            for s in video_info.get('streams', []) if s.get('codec_type') == 'subtitle'):
+        raise ValueError('MP4 cannot keep these image-based subtitles. Choose MKV output.')
+    duration = track_duration(video_info, 'video') or 0
+    end_time = None
+    if shortest:
+        audio_duration = track_duration(audio_info, 'audio')
+        if not duration or audio_duration is None:
+            raise ValueError('Could not determine track durations. Uncheck the shorter-track option and render again.')
+        end_time = min(duration, audio_duration + shift)
+        if end_time <= 0:
+            raise ValueError('The audio offset moves the entire new audio track before the video.')
 
     def report(text):
         for line in reversed(text.splitlines()):
@@ -95,7 +140,8 @@ def export(video, audio, directory, shift, extension, shortest, cancelled, progr
     # Work in the destination filesystem; publish without overwriting any file.
     with tempfile.TemporaryDirectory(prefix='.audio-swop-', dir=directory) as temporary:
         partial = Path(temporary) / f'export.{extension}'
-        run_command(build_command(video, audio, partial, shift, shortest), cancelled, report)
+        run_command(build_command(video, audio, partial, shift, shortest, audio_label,
+                                  video_info, end_time), cancelled, report)
         if cancelled.is_set():
             raise Cancelled()
         if not partial.is_file() or partial.stat().st_size == 0:

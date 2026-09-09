@@ -40,7 +40,7 @@ class InterfaceTests(unittest.TestCase):
         self.assertIsNone(self.window.worker)
 
     @staticmethod
-    def render_fixture(video, audio, directory, *args):
+    def render_fixture(video, audio, directory, *args, **kwargs):
         path = Path(directory) / 'rendered.mp4'
         path.write_bytes(b'exact rendered preview bytes')
         return str(path)
@@ -83,6 +83,7 @@ class InterfaceTests(unittest.TestCase):
             lambda: self.window.shift.setValue(0.25),
             lambda: self.window.video.setText('/tmp/other.mp4'),
             lambda: self.window.audio.setText('/tmp/other.wav'),
+            lambda: self.window.audio_label.setText('Lithuanian dub'),
             lambda: self.window.format.setCurrentIndex(1),
             lambda: self.window.shortest.setChecked(False),
         )
@@ -94,6 +95,15 @@ class InterfaceTests(unittest.TestCase):
                 self.assertFalse(self.window.save_button.isEnabled())
                 self.assertFalse(old_path.exists())
                 self.assertFalse(self.window.preview_path)
+
+    def test_new_audio_label_is_passed_to_export(self):
+        self.window.audio_label.setText('Lithuanian dub')
+        self.window.video.setText('/tmp/video.mp4')
+        self.window.audio.setText('/tmp/audio.wav')
+        with patch('audio_swop.export', side_effect=self.render_fixture) as render:
+            self.window.start_process()
+            self.wait_for_worker()
+        self.assertEqual(render.call_args.kwargs['audio_label'], 'Lithuanian dub')
 
     def test_output_folder_change_preserves_preview(self):
         self.render()
@@ -108,7 +118,7 @@ class InterfaceTests(unittest.TestCase):
 
     def test_cancelled_render_cleans_up(self):
         from media import Cancelled
-        def cancelled_render(*args):
+        def cancelled_render(*args, **kwargs):
             cancelled = args[-2]
             cancelled.wait(2)
             raise Cancelled()
@@ -135,7 +145,7 @@ class InterfaceTests(unittest.TestCase):
 
     def test_close_during_render_waits_for_cleanup(self):
         from media import Cancelled
-        def cancelled_render(*args):
+        def cancelled_render(*args, **kwargs):
             args[-2].wait(2)
             raise Cancelled()
         self.window.video.setText('/tmp/video.mp4')
